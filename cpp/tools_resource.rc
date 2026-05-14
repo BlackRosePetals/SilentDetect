@@ -1,0 +1,3 @@
+#include <winuser.h>
+#include "resource.h"
+IDR_TOOLS_ZIP RCDATA "tools.zip"

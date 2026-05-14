@@ -1,0 +1,4 @@
+#include "resource.h"
+#include <winuser.h>
+
+IDI_APPICON ICON "app.ico"
