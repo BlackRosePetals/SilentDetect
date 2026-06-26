@@ -137,24 +137,14 @@ static bool ExtractToolsZip() {
     fclose(f);
     Log("Zip written successfully");
 
-    // Extract using PowerShell (more reliable than tar for zip files)
+    // Extract using tar.exe (built-in on Windows 10+, much faster than PowerShell Expand-Archive)
     std::wstring extractDir = toolsDir + L"\\extract";
     CreateDirectoryW(extractDir.c_str(), NULL);
 
     bool extracted = false;
 
-    // Use PowerShell to extract
-    // 修复：PowerShell命令注入 — 转义路径中的单引号（PowerShell中用 '' 表示一个字面单引号）
-    std::wstring escapedZip = zipPath, escapedDir = extractDir;
-    for (std::wstring* s : {&escapedZip, &escapedDir}) {
-        size_t p = 0;
-        while ((p = s->find(L'\'', p)) != std::wstring::npos) {
-            s->insert(p, L"'");
-            p += 2;
-        }
-    }
-    std::wstring cmd = L"powershell -NoProfile -Command \"Expand-Archive -Path '"
-        + escapedZip + L"' -DestinationPath '" + escapedDir + L"' -Force\"";
+    // tar -xf can extract zip files natively, no .NET runtime overhead
+    std::wstring cmd = L"tar -xf \"" + zipPath + L"\" -C \"" + extractDir + L"\"";
     LogW(L"Running command: %s", cmd.c_str());
 
     STARTUPINFOW si = {sizeof(si)};
@@ -167,15 +157,43 @@ static bool ExtractToolsZip() {
 
     if (CreateProcessW(NULL, cmdBuf.data(), NULL, NULL, FALSE,
         CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
-        WaitForSingleObject(pi.hProcess, 60000);
+        WaitForSingleObject(pi.hProcess, 30000);
         DWORD exitCode = 0;
         GetExitCodeProcess(pi.hProcess, &exitCode);
         CloseHandle(pi.hThread);
         CloseHandle(pi.hProcess);
-        Log("PowerShell exit code: %lu", exitCode);
+        Log("tar exit code: %lu", exitCode);
         if (exitCode == 0) extracted = true;
     } else {
         Log("CreateProcessW FAILED");
+    }
+
+    if (!extracted) {
+        Log("tar failed, trying PowerShell as fallback...");
+        std::wstring escapedZip = zipPath, escapedDir = extractDir;
+        for (std::wstring* s : {&escapedZip, &escapedDir}) {
+            size_t p = 0;
+            while ((p = s->find(L'\'', p)) != std::wstring::npos) {
+                s->insert(p, L"'");
+                p += 2;
+            }
+        }
+        cmd = L"powershell -NoProfile -Command \"Expand-Archive -Path '"
+            + escapedZip + L"' -DestinationPath '" + escapedDir + L"' -Force\"";
+
+        cmdBuf.assign(cmd.begin(), cmd.end());
+        cmdBuf.push_back(0);
+
+        if (CreateProcessW(NULL, cmdBuf.data(), NULL, NULL, FALSE,
+            CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
+            WaitForSingleObject(pi.hProcess, 60000);
+            DWORD exitCode = 0;
+            GetExitCodeProcess(pi.hProcess, &exitCode);
+            CloseHandle(pi.hThread);
+            CloseHandle(pi.hProcess);
+            Log("PowerShell exit code: %lu", exitCode);
+            if (exitCode == 0) extracted = true;
+        }
     }
 
     if (!extracted) {
@@ -949,7 +967,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR lpCmdLine, int nCmdSh
     if (g_hIcon) wc.hIcon = g_hIcon;
     RegisterClassExW(&wc);
 
-    std::wstring title = L"\x5927\x5185\x9759\x63A2 v1.3.3";
+    std::wstring title = L"\x5927\x5185\x9759\x63A2 v1.3.4";
 
     g_hWnd = CreateWindowExW(
         WS_EX_ACCEPTFILES,
