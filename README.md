@@ -17,3 +17,12 @@
 **1.3.2**
    添加命令行功能，修复十余个细节，在github开源： 新增命令行参数支持：`/out:文件` 无窗口输出、`/run` 批量运行exe、`/all` 运行全部、`/copy` 复制命令， - 参数前缀兼容 `-` 和 `/`，冒号兼容中文 `：`
 使用时请注意程序自带DIE包解压需要一点时间，（在状态栏有显示）如果不存在DIE或被杀毒软件拦截，将只能用程序自有的识别方式，自有识别能力相对有限，不如DIE全面。
+
+**1.3.3**
+   优化DIE识别信息展示：未识别文件统一显示"未识别"而非武断判定"非安装器程序"；DIE检测结果按优先级回落展示（Format > Installer > Packer > Protector > Tool > Library > Linker > Compiler），优先显示文件格式标识，忽略工具链信息。
+
+**1.3.4**
+   优化解压速度：Tools解压从PowerShell改为Windows内置tar.exe，首次运行解压速度提升数倍，PowerShell保留为Win7兼容兜底方案。
+
+**1.3.5**
+   新增帮助文本分析功能（HelpTextScanner）：当DIE和PE扫描都未命中时，尝试用`/?`、`-?`、`/help`、`--help`等参数运行程序，捕获帮助文本并搜索静默参数关键词（如/SILENT、/QN、/Q:a等）。扫描流程升级为三级回退：DIE → PeScanner → HelpTextScanner。
