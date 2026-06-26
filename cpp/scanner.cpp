@@ -679,7 +679,226 @@ ScanResult DieScanner::Scan(const std::wstring& filePath) {
 }
 
 // ============================================================
-// DetectorEngine - DIE first, PeScanner fallback
+// HelpTextScanner - 尝试 /? --help 等参数捕获帮助文本
+// ============================================================
+
+// 关键词 → 数据库类型的映射结构
+struct KeywordMapping {
+    const char* keyword;     // 帮助文本中的关键词（小写）
+    const char* dbType;      // 数据库中的 InstallerInfo type
+    double confidence;       // 置信度
+};
+
+// 按优先级排列：精确匹配优先
+static const KeywordMapping g_keywordMappings[] = {
+    // InnoSetup 系列
+    {"/verysilent",    "InnoSetup", 0.8},
+    {"/silent",        "InnoSetup", 0.7},
+    {"/sp-",           "InnoSetup", 0.75},
+    // NSIS 系列
+    {"/sd",            "NSIS",      0.7},
+    // InstallShield 系列
+    {"/s /v",          "InstallShield", 0.75},
+    {"/s /v\"/qn\"",   "InstallShield", 0.85},
+    // MSI/WiX 系列
+    {"/qn",            "MSI",       0.7},
+    {"/qb",            "MSI",       0.65},
+    {"/passive",       "MSI",       0.65},
+    {"msiexec",        "MSI",       0.6},
+    // IExpress
+    {"/q:a",           "IExpress",  0.7},
+    {"/q:u",           "IExpress",  0.7},
+    // Squirrel/Electron
+    {"--silent",       "Squirrel",  0.7},
+    // BitRock
+    {"--mode unattended", "BitRock", 0.7},
+    // 7-Zip SFX
+    {"-y",             "7ZipSFX",   0.6},
+    // WinZip
+    {"-auto",          "WinZipSFX", 0.65},
+};
+
+std::string HelpTextScanner::RunWithHelpFlag(const std::wstring& filePath, const std::wstring& flag) {
+    SECURITY_ATTRIBUTES sa = {sizeof(sa), NULL, TRUE};
+    HANDLE hRead = NULL, hWrite = NULL;
+    if (!CreatePipe(&hRead, &hWrite, &sa, 0))
+        return "";
+    SetHandleInformation(hRead, HANDLE_FLAG_INHERIT, 0);
+
+    STARTUPINFOW si = {sizeof(si)};
+    si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+    si.hStdOutput = hWrite;
+    si.hStdError = hWrite;
+    si.wShowWindow = SW_HIDE;
+
+    PROCESS_INFORMATION pi = {};
+    std::wstring cmdLine = L"\"" + filePath + L"\" " + flag;
+    std::vector<wchar_t> buf(cmdLine.begin(), cmdLine.end());
+    buf.push_back(0);
+
+    BOOL ok = CreateProcessW(NULL, buf.data(), NULL, NULL, TRUE,
+        CREATE_NO_WINDOW, NULL, NULL, &si, &pi);
+
+    CloseHandle(hWrite);
+
+    if (!ok) {
+        CloseHandle(hRead);
+        return "";
+    }
+
+    // 捕获输出，最多等 1 秒
+    std::string output;
+    char readBuf[4096];
+    DWORD bytesRead;
+
+    // 等 500ms，检查是否有输出
+    WaitForSingleObject(pi.hProcess, 500);
+
+    // 检查是否有可用输出
+    DWORD avail = 0;
+    PeekNamedPipe(hRead, NULL, 0, NULL, &avail, NULL);
+    if (avail == 0) {
+        // 无输出，再等 500ms
+        WaitForSingleObject(pi.hProcess, 500);
+        PeekNamedPipe(hRead, NULL, 0, NULL, &avail, NULL);
+    }
+
+    // 读取所有可用输出
+    while (true) {
+        DWORD avail = 0;
+        if (!PeekNamedPipe(hRead, NULL, 0, NULL, &avail, NULL) || avail == 0)
+            break;
+        DWORD toRead = (avail < sizeof(readBuf)) ? avail : sizeof(readBuf);
+        if (ReadFile(hRead, readBuf, toRead, &bytesRead, NULL) && bytesRead > 0)
+            output.append(readBuf, bytesRead);
+        else
+            break;
+    }
+
+    // 超时则杀进程
+    DWORD exitCode = 0;
+    GetExitCodeProcess(pi.hProcess, &exitCode);
+    if (exitCode == STILL_ACTIVE)
+        TerminateProcess(pi.hProcess, 1);
+
+    CloseHandle(hRead);
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+
+    return output;
+}
+
+// 枚举进程的窗口，捕获帮助文本
+struct GuiWindowData {
+    DWORD processId;
+    std::string text;
+};
+
+static BOOL CALLBACK EnumWindowsProc(HWND hwnd, LPARAM lParam) {
+    GuiWindowData* data = reinterpret_cast<GuiWindowData*>(lParam);
+    DWORD pid = 0;
+    GetWindowThreadProcessId(hwnd, &pid);
+    if (pid != data->processId)
+        return TRUE;
+
+    // 只读取可见窗口的文字
+    if (!IsWindowVisible(hwnd))
+        return TRUE;
+
+    char textBuf[4096] = {};
+    int len = GetWindowTextA(hwnd, textBuf, sizeof(textBuf));
+    if (len > 0) {
+        if (!data->text.empty()) data->text += "\n";
+        data->text += textBuf;
+    }
+
+    // 也读取窗口内的子控件文字（如 Static 控件）
+    HWND child = GetWindow(hwnd, GW_CHILD);
+    while (child) {
+        char childText[4096] = {};
+        int childLen = GetWindowTextA(child, childText, sizeof(childText));
+        if (childLen > 0) {
+            if (!data->text.empty()) data->text += "\n";
+            data->text += childText;
+        }
+        child = GetWindow(child, GW_HWNDNEXT);
+    }
+
+    return TRUE;
+}
+
+std::string HelpTextScanner::CheckGuiWindows(DWORD processId) {
+    GuiWindowData data;
+    data.processId = processId;
+    EnumWindows(EnumWindowsProc, reinterpret_cast<LPARAM>(&data));
+    return data.text;
+}
+
+const InstallerInfo* HelpTextScanner::MatchKeywords(const std::string& text) {
+    if (text.empty())
+        return nullptr;
+
+    // 转小写
+    std::string lower = text;
+    for (auto& c : lower) c = tolower((unsigned char)c);
+
+    const InstallerInfo* bestMatch = nullptr;
+    double bestConf = 0;
+
+    for (const auto& km : g_keywordMappings) {
+        if (lower.find(km.keyword) != std::string::npos) {
+            if (km.confidence > bestConf) {
+                const InstallerInfo* info = DB_FindByType(km.dbType);
+                if (info) {
+                    bestConf = km.confidence;
+                    bestMatch = info;
+                }
+            }
+        }
+    }
+
+    return bestMatch;
+}
+
+ScanResult HelpTextScanner::Scan(const std::wstring& filePath) {
+    ScanResult result;
+    result.filePath = filePath;
+    result.detectedBy = "HelpText";
+
+    // 尝试不同的帮助参数
+    static const wchar_t* helpFlags[] = {
+        L"/?", L"-?", L"/help", L"--help", L"/h", L"-h"
+    };
+
+    for (const auto& flag : helpFlags) {
+        // 尝试捕获控制台输出
+        std::string output = RunWithHelpFlag(filePath, flag);
+
+        // 也检查 GUI 窗口（某些安装器弹出帮助对话框）
+        // 注意：RunWithHelpFlag 已经杀掉了进程，窗口可能已消失
+        // 所以我们主要依赖控制台输出
+
+        if (!output.empty()) {
+            const InstallerInfo* match = MatchKeywords(output);
+            if (match) {
+                result.installerType = match->type;
+                result.installerFullName = match->fullName;
+                result.silentCommand = ReplaceTemplate(match->cmdTemplate, GetFileName(filePath));
+                result.confidence = 0.7;
+                result.success = true;
+                for (int i = 0; i < match->paramCount; i++)
+                    result.params.push_back(&match->params[i]);
+                return result;
+            }
+        }
+    }
+
+    result.errorMessage = "Help text did not match any known installer";
+    return result;
+}
+
+// ============================================================
+// DetectorEngine - DIE first, PeScanner fallback, HelpText last
 // ============================================================
 
 ScanResult DetectorEngine::Scan(const std::wstring& filePath) {
@@ -693,11 +912,25 @@ ScanResult DetectorEngine::Scan(const std::wstring& filePath) {
         if (peResult.success)
             return peResult;
 
-        // Both failed, return DIE error
-        dieResult.errorMessage += " (PE\xe6\x89\xab\xe6\x8f\x8f\xe4\xb9\x9f\xe6\x9c\xaa\xe5\x91\xbd\xe4\xb8\xad)"; // (PE扫描也未命中)
+        // PeScanner failed, try HelpText
+        ScanResult helpResult = m_help.Scan(filePath);
+        if (helpResult.success)
+            return helpResult;
+
+        // All failed, return DIE error
+        dieResult.errorMessage += " (PE扫描也未命中，帮助文本未匹配)";
         return dieResult;
     }
 
-    // DIE not available, use PeScanner only
-    return m_pe.Scan(filePath);
+    // DIE not available, use PeScanner then HelpText
+    ScanResult peResult = m_pe.Scan(filePath);
+    if (peResult.success)
+        return peResult;
+
+    ScanResult helpResult = m_help.Scan(filePath);
+    if (helpResult.success)
+        return helpResult;
+
+    peResult.errorMessage += " (帮助文本未匹配)";
+    return peResult;
 }

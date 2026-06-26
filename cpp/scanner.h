@@ -68,6 +68,16 @@ private:
     std::string ExtractVersion(const std::string& json, size_t matchIdx);
 };
 
+class HelpTextScanner {
+public:
+    ScanResult Scan(const std::wstring& filePath);
+
+private:
+    std::string RunWithHelpFlag(const std::wstring& filePath, const std::wstring& flag);
+    std::string CheckGuiWindows(DWORD processId);
+    const InstallerInfo* MatchKeywords(const std::string& text);
+};
+
 class DetectorEngine {
 public:
     ScanResult Scan(const std::wstring& filePath);
@@ -75,6 +85,7 @@ public:
 private:
     DieScanner m_die;
     PeScanner m_pe;
+    HelpTextScanner m_help;
 };
 
 #endif // SCANNER_H

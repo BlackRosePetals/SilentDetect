@@ -967,7 +967,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR lpCmdLine, int nCmdSh
     if (g_hIcon) wc.hIcon = g_hIcon;
     RegisterClassExW(&wc);
 
-    std::wstring title = L"\x5927\x5185\x9759\x63A2 v1.3.4";
+    std::wstring title = L"\x5927\x5185\x9759\x63A2 v1.3.5";
 
     g_hWnd = CreateWindowExW(
         WS_EX_ACCEPTFILES,
