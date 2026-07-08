@@ -78,6 +78,11 @@ private:
     const InstallerInfo* MatchKeywords(const std::string& text);
 };
 
+class KnownSoftwareScanner {
+public:
+    ScanResult Scan(const std::wstring& filePath);
+};
+
 class DetectorEngine {
 public:
     ScanResult Scan(const std::wstring& filePath);
@@ -85,7 +90,7 @@ public:
 private:
     DieScanner m_die;
     PeScanner m_pe;
-    HelpTextScanner m_help;
+    KnownSoftwareScanner m_known;
 };
 
 #endif // SCANNER_H

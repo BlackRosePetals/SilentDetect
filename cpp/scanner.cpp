@@ -1,4 +1,5 @@
 #include "scanner.h"
+#include "knownsoftware.h"
 #include <algorithm>
 #include <cstring>
 #include <cctype>
@@ -898,7 +899,51 @@ ScanResult HelpTextScanner::Scan(const std::wstring& filePath) {
 }
 
 // ============================================================
-// DetectorEngine - DIE first, PeScanner fallback, HelpText last
+// ============================================================
+// KnownSoftwareScanner - 通过文件名匹配知名软件
+// ============================================================
+
+ScanResult KnownSoftwareScanner::Scan(const std::wstring& filePath) {
+    ScanResult result;
+    result.filePath = filePath;
+    result.detectedBy = "KnownSoftware";
+
+    const KnownSoft* ks = KS_FindByPattern(filePath);
+    if (!ks) {
+        result.errorMessage = "Unknown software (not in known list)";
+        return result;
+    }
+
+    // 用已知静默命令替换 {file}
+    std::string sc = ks->silentCmd;
+    std::string fname = GetFileName(filePath);
+    size_t pos = sc.find("{file}");
+    if (pos != std::string::npos)
+        sc.replace(pos, 6, fname);
+
+    // 先查现有数据库（InnoSetup/NSIS等标准类型）
+    const InstallerInfo* dbInfo = DB_FindByType(ks->installerType);
+    if (dbInfo) {
+        result.installerType = dbInfo->type;
+        result.installerFullName = ks->displayName;
+        result.silentCommand = sc;
+        result.confidence = 0.75;
+        for (int i = 0; i < dbInfo->paramCount; i++)
+            result.params.push_back(&dbInfo->params[i]);
+    } else {
+        // 自定义类型，直接使用已知参数
+        result.installerType = ks->installerType;
+        result.installerFullName = ks->displayName;
+        result.silentCommand = sc;
+        result.confidence = 0.65;
+    }
+    result.success = true;
+    return result;
+}
+
+// ============================================================
+// DetectorEngine - DIE first, PeScanner fallback, KnownSoftware last
+// ============================================================
 // ============================================================
 
 ScanResult DetectorEngine::Scan(const std::wstring& filePath) {
@@ -912,11 +957,22 @@ ScanResult DetectorEngine::Scan(const std::wstring& filePath) {
         if (peResult.success)
             return peResult;
 
-        // Both failed, return DIE error
+        // PeScanner failed, try KnownSoftware
+        ScanResult ksResult = m_known.Scan(filePath);
+        if (ksResult.success)
+            return ksResult;
+
+        // All failed, return DIE error
         dieResult.errorMessage += " (PE扫描也未命中)";
         return dieResult;
     }
 
-    // DIE not available, use PeScanner only
-    return m_pe.Scan(filePath);
+    // DIE not available, use PeScanner then KnownSoftware
+    ScanResult peResult = m_pe.Scan(filePath);
+    if (peResult.success) return peResult;
+
+    ScanResult ksResult = m_known.Scan(filePath);
+    if (ksResult.success) return ksResult;
+
+    return peResult;
 }

@@ -1237,7 +1237,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR lpCmdLine, int nCmdSh
     wcDlg.lpszClassName = L"BatchOrderDlg";
     RegisterClassExW(&wcDlg);
 
-    std::wstring title = L"\x5927\x5185\x9759\x63A2 v1.3.6";
+    std::wstring title = L"\x5927\x5185\x9759\x63A2 v1.3.7";
 
     g_hWnd = CreateWindowExW(
         WS_EX_ACCEPTFILES,
