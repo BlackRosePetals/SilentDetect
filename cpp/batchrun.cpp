@@ -1066,3 +1066,88 @@ int BR_RunAll(HWND hWnd, const std::wstring& dir, RunFileType type) {
 
     return successCount;
 }
+
+// 用指定的列表顺序执行（批量顺序调整后使用）
+int BR_RunAllWithList(HWND hWnd, const std::vector<RunItem>& items) {
+    if (items.empty()) return 0;
+
+    std::wstring dir = BR_GetExeDirectory();
+    int totalCount = (int)items.size();
+
+    HWND hStatus = FindWindowExW(hWnd, NULL, STATUSCLASSNAMEW, NULL);
+    HWND hProgress = GetDlgItem(hWnd, 1062);
+    const int MAX_PARALLEL = 3;
+    int successCount = 0;
+    size_t nextIdx = 0;
+
+    if (hProgress) {
+        SendMessage(hProgress, PBM_SETRANGE32, 0, (LPARAM)totalCount);
+        SendMessage(hProgress, PBM_SETPOS, 0, 0);
+        ShowWindow(hProgress, SW_SHOW);
+    }
+
+    struct RunningProc { HANDLE hProcess; size_t itemIdx; };
+    std::vector<RunningProc> running;
+
+    auto updateStatus = [&](const std::wstring& currentFile = L"") {
+        if (hStatus) {
+            std::wstring status;
+            if (!currentFile.empty())
+                status = L"正在运行: " + currentFile;
+            else
+                status = L"进度: " + std::to_wstring(successCount) + L"/" + std::to_wstring(totalCount);
+            SendMessage(hStatus, SB_SETTEXT, 0, (LPARAM)status.c_str());
+        }
+        if (hProgress) SendMessage(hProgress, PBM_SETPOS, (WPARAM)successCount, 0);
+        UpdateWindow(hWnd);
+        MSG msg;
+        while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE)) {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    };
+
+    while (successCount < (int)items.size()) {
+        while ((int)running.size() < MAX_PARALLEL && nextIdx < items.size()) {
+            const auto& item = items[nextIdx];
+            updateStatus(item.fileName);
+            HANDLE hProc = LaunchItem(item, dir);
+            if (hProc)
+                running.push_back({hProc, nextIdx});
+            else
+                successCount++;
+            nextIdx++;
+            Sleep(150);
+        }
+        if (running.empty()) break;
+
+        std::vector<HANDLE> handles;
+        for (auto& r : running) handles.push_back(r.hProcess);
+        DWORD waitResult = WaitForMultipleObjects((DWORD)handles.size(), handles.data(), FALSE, 1000);
+        if (waitResult >= WAIT_OBJECT_0 && waitResult < WAIT_OBJECT_0 + handles.size()) {
+            size_t idx = waitResult - WAIT_OBJECT_0;
+            CloseHandle(running[idx].hProcess);
+            running.erase(running.begin() + idx);
+            successCount++;
+            updateStatus();
+        }
+    }
+
+    for (auto& r : running) {
+        WaitForSingleObject(r.hProcess, INFINITE);
+        CloseHandle(r.hProcess);
+        successCount++;
+    }
+
+    BR_CleanupTemp();
+    updateStatus();
+
+    if (hProgress) SendMessage(hProgress, PBM_SETPOS, (WPARAM)totalCount, 0);
+
+    if (hStatus) {
+        std::wstring status = L"执行完成: " + std::to_wstring(successCount) + L"/" + std::to_wstring(totalCount) + L" 成功";
+        SendMessage(hStatus, SB_SETTEXT, 0, (LPARAM)status.c_str());
+    }
+
+    return successCount;
+}

@@ -349,6 +349,15 @@ static std::wstring AToW(const std::string& s) {
     return AToW(s.c_str());
 }
 
+static std::string WToA(const std::wstring& ws) {
+    if (ws.empty()) return "";
+    int len = WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), -1, nullptr, 0, nullptr, nullptr);
+    if (len <= 0) return "";
+    std::string s(len - 1, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), -1, &s[0], len, nullptr, nullptr);
+    return s;
+}
+
 // Headless mode: scan file and write results to output file
 static int HeadlessScan(const std::wstring& inputFile, const std::wstring& outFile) {
     if (!FindToolsInExeDir()) {
@@ -598,8 +607,192 @@ static void ScanFile(const std::wstring& filePath) {
 }
 
 // ============================================================
-// Create controls
+// Batch order dialog - 批量运行顺序调整对话框
 // ============================================================
+
+struct BatchListItem {
+    std::wstring fileName;
+    std::wstring filePath;
+    std::string silentCmd;
+    bool checked;
+};
+
+static std::vector<BatchListItem> g_batchItems;
+static HWND g_hBatchDlg = NULL;
+static HWND g_hBatchList = NULL;
+static INT_PTR g_batchResult = 0;
+
+static void BatchDialog_RefreshList() {
+    ListView_DeleteAllItems(g_hBatchList);
+    for (size_t i = 0; i < g_batchItems.size(); i++) {
+        const auto& item = g_batchItems[i];
+        LVITEMW lvi = {};
+        lvi.mask = LVIF_TEXT;
+        lvi.iItem = (int)i;
+        lvi.iSubItem = 0;
+        lvi.pszText = (LPWSTR)item.fileName.c_str();
+        ListView_InsertItem(g_hBatchList, &lvi);
+        ListView_SetCheckState(g_hBatchList, (int)i, item.checked ? TRUE : FALSE);
+    }
+}
+
+static LRESULT CALLBACK BatchDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam) {
+    switch (msg) {
+    case WM_CREATE: {
+        // 创建 ListView
+        g_hBatchList = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
+            WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SHOWSELALWAYS,
+            10, 10, 540, 280, hDlg, (HMENU)IDC_BATCH_LIST, g_hInst, NULL);
+        SendMessage(g_hBatchList, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
+        ListView_SetExtendedListViewStyle(g_hBatchList,
+            LVS_EX_FULLROWSELECT | LVS_EX_CHECKBOXES | LVS_EX_GRIDLINES);
+
+        LVCOLUMNW lvc = {};
+        lvc.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_FMT;
+        lvc.fmt = LVCFMT_LEFT;
+        lvc.cx = 500;
+        lvc.pszText = (LPWSTR)L"文件名";
+        ListView_InsertColumn(g_hBatchList, 0, &lvc);
+        BatchDialog_RefreshList();
+
+        int btnY = 300, btnH = 26;
+        CreateWindowW(L"BUTTON", L"↑ 上移", WS_CHILD | WS_VISIBLE,
+            10, btnY, 70, btnH, hDlg, (HMENU)IDC_BTN_UP, g_hInst, NULL);
+        CreateWindowW(L"BUTTON", L"↓ 下移", WS_CHILD | WS_VISIBLE,
+            85, btnY, 70, btnH, hDlg, (HMENU)IDC_BTN_DOWN, g_hInst, NULL);
+        CreateWindowW(L"BUTTON", L"全选", WS_CHILD | WS_VISIBLE,
+            165, btnY, 60, btnH, hDlg, (HMENU)IDC_BTN_SELALL, g_hInst, NULL);
+        CreateWindowW(L"BUTTON", L"取消全选", WS_CHILD | WS_VISIBLE,
+            230, btnY, 80, btnH, hDlg, (HMENU)IDC_BTN_SELNONE, g_hInst, NULL);
+        CreateWindowW(L"BUTTON", L"生成批处理", WS_CHILD | WS_VISIBLE,
+            360, btnY, 90, btnH, hDlg, (HMENU)IDC_BTN_GENBAT2, g_hInst, NULL);
+        CreateWindowW(L"BUTTON", L"开始安装", WS_CHILD | WS_VISIBLE,
+            455, btnY, 90, btnH, hDlg, (HMENU)IDC_BTN_START, g_hInst, NULL);
+
+        for (int id : {IDC_BTN_UP, IDC_BTN_DOWN, IDC_BTN_SELALL, IDC_BTN_SELNONE,
+                        IDC_BTN_GENBAT2, IDC_BTN_START})
+            SendMessage(GetDlgItem(hDlg, id), WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
+
+        SetWindowPos(hDlg, NULL, 0, 0, 570, 370, SWP_NOMOVE | SWP_NOZORDER);
+        return 0;
+    }
+
+    case WM_COMMAND: {
+        int id = LOWORD(wParam);
+        int sel = (int)SendMessage(g_hBatchList, LVM_GETNEXTITEM, -1, LVNI_SELECTED);
+        int count = (int)SendMessage(g_hBatchList, LVM_GETITEMCOUNT, 0, 0);
+
+        switch (id) {
+        case IDC_BTN_UP:
+            if (sel > 0) {
+                std::swap(g_batchItems[sel], g_batchItems[sel - 1]);
+                BatchDialog_RefreshList();
+                ListView_SetItemState(g_hBatchList, sel - 1, LVIS_SELECTED, LVIS_SELECTED);
+            }
+            break;
+        case IDC_BTN_DOWN:
+            if (sel >= 0 && sel < count - 1) {
+                std::swap(g_batchItems[sel], g_batchItems[sel + 1]);
+                BatchDialog_RefreshList();
+                ListView_SetItemState(g_hBatchList, sel + 1, LVIS_SELECTED, LVIS_SELECTED);
+            }
+            break;
+        case IDC_BTN_SELALL:
+            for (int i = 0; i < count; i++) {
+                g_batchItems[i].checked = true;
+                ListView_SetCheckState(g_hBatchList, i, TRUE);
+            }
+            break;
+        case IDC_BTN_SELNONE:
+            for (int i = 0; i < count; i++) {
+                g_batchItems[i].checked = false;
+                ListView_SetCheckState(g_hBatchList, i, FALSE);
+            }
+            break;
+        case IDC_BTN_GENBAT2: {
+            for (int i = 0; i < count; i++)
+                g_batchItems[i].checked = (ListView_GetCheckState(g_hBatchList, i) != FALSE);
+
+            // 生成批处理内容的逻辑
+            std::string batContent;
+            bool zh = (PRIMARYLANGID(GetUserDefaultUILanguage()) == LANG_CHINESE);
+            batContent += "@echo off\r\n";
+            batContent += zh ? "chcp 936 >nul 2>&1\r\n\r\n" : "chcp 65001 >nul 2>&1\r\n\r\n";
+            if (zh)
+                batContent += "@REM 批量静默安装脚本 - 由大内静探生成\r\n\r\n";
+            else
+                batContent += "@REM Batch silent install script - generated by SilentParamQuery\r\n\r\n";
+
+            int selCount = 0;
+            for (auto& item : g_batchItems) {
+                if (!item.checked) continue;
+                selCount++;
+                std::string fnA = WToA(item.fileName);
+                batContent += "echo " + (zh ? std::string("正在安装: ") : std::string("Installing: ")) + fnA + "\r\n";
+                if (!item.silentCmd.empty())
+                    batContent += item.silentCmd + "\r\n";
+                else {
+                    std::string pathA = WToA(item.filePath);
+                    batContent += std::string("\"") + pathA + "\"\r\n";
+                }
+                batContent += "if %ERRORLEVEL% NEQ 0 (\r\n";
+                batContent += zh ? "    echo [失败] " + fnA + " 安装出错\r\n    pause\r\n"
+                               : "    echo [FAILED] " + fnA + " error\r\n    pause\r\n";
+                batContent += ")\r\n\r\n";
+            }
+            if (selCount == 0) {
+                MessageBoxW(hDlg, L"请至少选择一个项目。", L"提示", MB_OK | MB_ICONINFORMATION);
+                break;
+            }
+            batContent += zh ? "echo 安装完成。\r\n" : "echo Installation complete.\r\n";
+
+            wchar_t path[MAX_PATH] = {};
+            OPENFILENAMEW ofn = {};
+            ofn.lStructSize = sizeof(ofn);
+            ofn.hwndOwner = hDlg;
+            ofn.lpstrFilter = L"批处理文件 (*.bat)\0*.bat\0";
+            ofn.lpstrFile = path;
+            ofn.nMaxFile = MAX_PATH;
+            ofn.lpstrDefExt = L"bat";
+            ofn.Flags = OFN_OVERWRITEPROMPT;
+            if (GetSaveFileNameW(&ofn))
+                SaveBatchFile(batContent, path);
+            break;
+        }
+        case IDC_BTN_START:
+            for (int i = 0; i < count; i++)
+                g_batchItems[i].checked = (ListView_GetCheckState(g_hBatchList, i) != FALSE);
+            g_batchResult = IDOK;
+            DestroyWindow(hDlg);
+            break;
+        case IDCANCEL:
+            g_batchResult = IDCANCEL;
+            DestroyWindow(hDlg);
+            break;
+        }
+        break;
+    }
+
+    case WM_NOTIFY: {
+        NMHDR* pnm = (NMHDR*)lParam;
+        if (pnm->idFrom == IDC_BATCH_LIST && pnm->code == LVN_ITEMCHANGED) {
+            NMLISTVIEW* pnmlv = (NMLISTVIEW*)lParam;
+            if (pnmlv->uChanged & LVIF_STATE) {
+                int idx = pnmlv->iItem;
+                if (idx >= 0 && idx < (int)g_batchItems.size())
+                    g_batchItems[idx].checked = (ListView_GetCheckState(g_hBatchList, idx) != FALSE);
+            }
+        }
+        break;
+    }
+
+    case WM_CLOSE:
+        g_batchResult = IDCANCEL;
+        DestroyWindow(hDlg);
+        break;
+    }
+    return DefWindowProc(hDlg, msg, wParam, lParam);
+}
 
 static void CreateControls(HWND hWnd) {
     g_hFontNormal = CreateFontW(-14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
@@ -846,15 +1039,81 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
             return 0;
         }
 
-        case IDC_BTN_RUN_EXES: {
-            std::wstring dir = BR_GetExeDirectory();
-            BR_RunAll(hWnd, dir, RunFileType::ExeOnly);
-            return 0;
-        }
-
+        case IDC_BTN_RUN_EXES:
         case IDC_BTN_RUN_ALL: {
+            RunFileType type = (LOWORD(wParam) == IDC_BTN_RUN_EXES)
+                ? RunFileType::ExeOnly : RunFileType::AllRunnable;
+
+            // 扫描目录
             std::wstring dir = BR_GetExeDirectory();
-            BR_RunAll(hWnd, dir, RunFileType::AllRunnable);
+            auto items = BR_ScanAndSort(dir, type);
+
+            // 填充 batch 列表
+            g_batchItems.clear();
+            for (const auto& r : items) {
+                BatchListItem bi;
+                bi.fileName = r.fileName;
+                bi.filePath = r.filePath;
+                bi.checked = true;
+
+                // 尝试检测静默参数
+                DetectorEngine eng;
+                ScanResult sr = eng.Scan(r.filePath);
+                bi.silentCmd = sr.success ? sr.silentCommand : "";
+
+                g_batchItems.push_back(bi);
+            }
+
+            if (g_batchItems.empty()) {
+                MessageBoxW(hWnd, L"当前目录没有找到可运行的程序。", L"提示", MB_OK | MB_ICONINFORMATION);
+                return 0;
+            }
+
+            // 显示排序对话框 (自建窗口 + 模态消息循环)
+            g_hBatchDlg = CreateWindowExW(WS_EX_DLGMODALFRAME, L"BatchOrderDlg",
+                L"批量安装顺序调整",
+                WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
+                CW_USEDEFAULT, CW_USEDEFAULT, 570, 370,
+                hWnd, NULL, g_hInst, NULL);
+            SetWindowLongPtrW(g_hBatchDlg, GWLP_USERDATA, (LONG_PTR)hWnd);
+
+            // 居中显示
+            RECT rcOwner, rcDlg;
+            GetWindowRect(hWnd, &rcOwner);
+            GetWindowRect(g_hBatchDlg, &rcDlg);
+            int dlgW = rcDlg.right - rcDlg.left, dlgH = rcDlg.bottom - rcDlg.top;
+            int x = rcOwner.left + ((rcOwner.right - rcOwner.left) - dlgW) / 2;
+            int y = rcOwner.top + ((rcOwner.bottom - rcOwner.top) - dlgH) / 2;
+            SetWindowPos(g_hBatchDlg, NULL, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
+
+            // 模态消息循环
+            EnableWindow(hWnd, FALSE);
+            MSG dlgMsg;
+            while (GetMessageW(&dlgMsg, NULL, 0, 0)) {
+                if (!IsWindow(g_hBatchDlg)) break;
+                TranslateMessage(&dlgMsg);
+                DispatchMessageW(&dlgMsg);
+            }
+            EnableWindow(hWnd, TRUE);
+            SetForegroundWindow(hWnd);
+
+            // 用户点击"开始安装"
+            if (g_batchResult == IDOK) {
+                // 用排序后的顺序和勾选状态运行
+                std::vector<RunItem> selected;
+                for (const auto& bi : g_batchItems) {
+                    if (bi.checked) {
+                        RunItem ri;
+                        ri.fileName = bi.fileName;
+                        ri.filePath = bi.filePath;
+                        selected.push_back(ri);
+                    }
+                }
+                if (!selected.empty()) {
+                    // 移除原列表中未勾选的，用新的顺序执行
+                    BR_RunAllWithList(g_hWnd, selected);
+                }
+            }
             return 0;
         }
         } // end switch LOWORD(wParam)
@@ -967,7 +1226,18 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR lpCmdLine, int nCmdSh
     if (g_hIcon) wc.hIcon = g_hIcon;
     RegisterClassExW(&wc);
 
-    std::wstring title = L"\x5927\x5185\x9759\x63A2 v1.3.5";
+    // Register BatchOrderDlg class
+    WNDCLASSEXW wcDlg = {};
+    wcDlg.cbSize = sizeof(wcDlg);
+    wcDlg.style = CS_HREDRAW | CS_VREDRAW;
+    wcDlg.lpfnWndProc = BatchDlgProc;
+    wcDlg.hInstance = hInstance;
+    wcDlg.hCursor = LoadCursor(nullptr, IDC_ARROW);
+    wcDlg.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+    wcDlg.lpszClassName = L"BatchOrderDlg";
+    RegisterClassExW(&wcDlg);
+
+    std::wstring title = L"\x5927\x5185\x9759\x63A2 v1.3.6";
 
     g_hWnd = CreateWindowExW(
         WS_EX_ACCEPTFILES,

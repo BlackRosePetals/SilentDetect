@@ -912,25 +912,11 @@ ScanResult DetectorEngine::Scan(const std::wstring& filePath) {
         if (peResult.success)
             return peResult;
 
-        // PeScanner failed, try HelpText
-        ScanResult helpResult = m_help.Scan(filePath);
-        if (helpResult.success)
-            return helpResult;
-
-        // All failed, return DIE error
-        dieResult.errorMessage += " (PE扫描也未命中，帮助文本未匹配)";
+        // Both failed, return DIE error
+        dieResult.errorMessage += " (PE扫描也未命中)";
         return dieResult;
     }
 
-    // DIE not available, use PeScanner then HelpText
-    ScanResult peResult = m_pe.Scan(filePath);
-    if (peResult.success)
-        return peResult;
-
-    ScanResult helpResult = m_help.Scan(filePath);
-    if (helpResult.success)
-        return helpResult;
-
-    peResult.errorMessage += " (帮助文本未匹配)";
-    return peResult;
+    // DIE not available, use PeScanner only
+    return m_pe.Scan(filePath);
 }

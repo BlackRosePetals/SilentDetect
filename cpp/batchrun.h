@@ -27,6 +27,9 @@ std::vector<RunItem> BR_ScanAndSort(const std::wstring& dir, RunFileType type);
 // 返回成功执行的数量
 int BR_RunAll(HWND hWnd, const std::wstring& dir, RunFileType type);
 
+// 用指定的列表顺序执行（批量顺序调整后使用）
+int BR_RunAllWithList(HWND hWnd, const std::vector<RunItem>& items);
+
 // 处理bat/cmd文件：替换pause，返回临时文件路径
 // 如果不需要替换（原文件无pause），返回空字符串
 std::wstring BR_PrepareBatCmd(const std::wstring& filePath);

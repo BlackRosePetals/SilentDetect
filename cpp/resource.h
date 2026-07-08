@@ -38,6 +38,15 @@
 #define IDC_BTN_RUN_ALL     1061
 #define IDC_PROGRESS        1062
 
+// Batch order dialog controls
+#define IDC_BATCH_LIST      1070
+#define IDC_BTN_UP          1071
+#define IDC_BTN_DOWN        1072
+#define IDC_BTN_SELALL      1073
+#define IDC_BTN_SELNONE     1074
+#define IDC_BTN_START       1075
+#define IDC_BTN_GENBAT2     1076
+
 #define IDC_STATUSBAR       1050
 
 #endif // RESOURCE_H
