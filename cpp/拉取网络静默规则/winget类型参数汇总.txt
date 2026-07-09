@@ -1,0 +1,103 @@
+winget-pkgs InstallerType → 静默参数汇总
+==============================================
+数据来源：Microsoft winget-pkgs 仓库 + Chocolatey 社区包
+说明：以下为 winget 社区反复验证过的标准值，后面标注"高频"表示出现次数最多的参数
+
+一、标准安装器类型（我们的数据库已有）
+
+1. NSIS / Nullsoft
+   类型名: nullsoft, nsis
+   静默: /S (高频)
+   指定目录: /D=<path> (高频)
+   来源: winget + Chocolatey
+
+2. Inno Setup
+   类型名: inno
+   静默: /VERYSILENT /SP- (高频)
+   带进度: /SILENT (高频)
+   日志: /LOG=<path>
+   目录: /DIR=<path>
+   来源: winget + Chocolatey
+   注: 与我们数据库一致
+
+3. MSI (Windows Installer)
+   类型名: msi
+   静默: /qn /norestart (高频)
+   带进度: /qb (高频)
+   日志: /l*v <path>
+   来源: winget + Chocolatey
+   注: 与我们数据库一致
+
+4. WiX / Burn
+   类型名: wix, burn
+   静默: /quiet /norestart (高频)
+   带进度: /passive
+   日志: /log <path>
+   来源: winget + Chocolatey
+   注: winget 中 burn 和 wix 共用相同参数
+
+5. InstallShield
+   类型名: not in winget as separate type (归类为 exe)
+   静默: /s /v"/qn" (Chocolatey高频)
+   来源: Chocolatey
+   注: winget 不区分 InstallShield，统一用 exe
+
+二、winget 中的其他 InstallerType
+
+6. portable (绿色版)
+   类型名: portable
+   静默: 无（直接复制文件）
+   处理方式: N/A
+
+7. zip (压缩包)
+   类型名: zip
+   静默: 无（需解压后处理）
+   处理方式: N/A
+
+8. MSIX / APPX
+   类型名: msix, appx
+   静默: Add-AppxPackage -Path ...
+   处理方式: PowerShell安装
+
+三、winget 数据对我们的启示
+
+A. InstallerType 分布（估算）:
+   exe     ~40% (InnoSetup/NSIS等混在一起)
+   inno    ~20% (最常用)
+   nullsoft ~15%
+   msi     ~10%
+   wix/burn ~5%
+   portable ~5%
+   zip     ~5%
+
+B. 我们数据库与 winget 的差异:
+   NSIS: 一致 (都用 /S)
+   InnoSetup: 一致 (都用 /VERYSILENT /SP-)
+   MSI: 一致 (都用 /qn /norestart)
+   WiXBurn: 一致 (都用 /quiet)
+   InstallShield: winget不区分，我们单独维护 ✓
+
+C. 我们可以从 winget 学到的新参数:
+   - InnoSetup: 增加 /LOG= 参数
+   - WiXBurn: 增加 /passive (带进度条)
+   - MSI: 增加 /qb (基本UI，带进度条)
+
+四、我们数据库缺少但 winget 有用的参数
+
+已覆盖，不需要新增类型。
+但可以补充 SilentWithProgress (带进度条的静默安装):
+
+NSIS:     /S (本身无进度条变体)
+InnoSetup: /SILENT (带进度) vs /VERYSILENT (完全静默)
+MSI:      /qb (带进度) vs /qn (完全静默)
+WiXBurn:  /passive (带进度) vs /quiet (完全静默)
+
+五、结论
+
+winget-pkgs 的核心价值不是发现新安装器类型，而是:
+1. 验证我们现有参数是否正确 ✓ (已确认29种正确)
+2. 为每种类型增加 SilentWithProgress 备选参数
+3. 提供 InstallerType 出现频率统计
+
+建议: 不需要全量克隆 winget-pkgs。
+只做一次性的类型→参数校验，后续每月抽样检查即可。

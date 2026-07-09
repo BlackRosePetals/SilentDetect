@@ -2,7 +2,7 @@ CXX = x86_64-w64-mingw32-g++
 WINDRES = windres
 
 CXXFLAGS = -static -O2 -mwindows -municode -std=c++17 -DUNICODE -D_UNICODE
-LDFLAGS = -lcomctl32 -lshell32 -lole32 -luuid -lgdi32 -lcomdlg32 -luser32 -lshlwapi
+LDFLAGS = -lcomctl32 -lshell32 -lole32 -luuid -lgdi32 -lcomdlg32 -luser32 -lshlwapi -lversion -lcrypt32
 
 TARGET = SilentParamQuery.exe
 SRCS = main.cpp scanner.cpp batgen.cpp batchrun.cpp

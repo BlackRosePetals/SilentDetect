@@ -427,9 +427,18 @@ std::string DieScanner::MapDieType(const std::string& dieType) {
     static const struct { const char* die; const char* internal; } mapping[] = {
         {"NSIS", "NSIS"},
         {"Inno Setup", "InnoSetup"},
+        {"Inno Setup Setup Data", "InnoSetup"},
+        {"InnoSetup:", "InnoSetup"},
+        {"JR.Inno.Setup", "InnoSetup"},
         {"InstallShield", "InstallShield"},
+        {"InstallShield Setup", "InstallShield"},
+        {"InstallShield Wizard", "InstallShield"},
         {"MSI", "MSI"},
+        {"Windows Installer", "MSI"},
         {"WiX", "WiXBurn"},
+        {"WiX MSI", "WiXMSI"},
+        {"WixBundle", "WiXBurn"},
+        {"WixStandardBootstrapperApplication", "WiXBurn"},
         {"Advanced Installer", "AdvancedInstaller"},
         {"Setup Factory", "SetupFactory"},
         {"Smart Install Maker", "SmartInstallMaker"},
@@ -445,13 +454,16 @@ std::string DieScanner::MapDieType(const std::string& dieType) {
         {"Clickteam", "ClickteamIC"},
         {"Paquet Builder", "PaquetBuilder"},
         {"AutoPlay", "AutoPlayMS"},
+        {"AutoPlay Media Studio", "AutoPlayMS"},
         {"IExpress", "IExpress"},
         {"WExtract", "IExpress"},
+        {"CABINET", "IExpress"},
+        {"Microsoft Self-Extractor", "IExpress"},
         {"Squirrel", "Squirrel"},
         {"BitRock", "BitRockInstallBuilder"},
         {"InstallScript", "InstallScript"},
         {"WinZip", "WinZipSFX"},
-        {"WiX MSI", "WiXMSI"},
+        {"WinZip Self-Extractor", "WinZipSFX"},
         {"APPX", "APPX"},
         {"MSIX", "MSIX"},
         {"MSIXBundle", "MSIXBundle"},
@@ -670,10 +682,10 @@ ScanResult DieScanner::Scan(const std::wstring& filePath) {
             result.params.push_back(&dbInfo->params[i]);
         result.success = true;
     } else {
-        result.installerType = detectedType;
-        result.installerFullName = detectedType;
-        result.confidence = 0.5;
-        result.success = true;
+        // DIE检测到了类型，但数据库无对应条目
+        // 不做武断判断，让后续的KnownSoftwareScanner尝试
+        result.dieDetection = "DIE detected: " + detectedType;
+        result.errorMessage = "DIE检测到类型但数据库无匹配 (" + detectedType + ")";
     }
 
     return result;
@@ -908,35 +920,51 @@ ScanResult KnownSoftwareScanner::Scan(const std::wstring& filePath) {
     result.filePath = filePath;
     result.detectedBy = "KnownSoftware";
 
-    const KnownSoft* ks = KS_FindByPattern(filePath);
-    if (!ks) {
+    KSMatch match = KS_FindByPattern(filePath);
+    if (!match.ks) {
         result.errorMessage = "Unknown software (not in known list)";
         return result;
     }
 
-    // 用已知静默命令替换 {file}
-    std::string sc = ks->silentCmd;
+    // 从数据库查找 InstallerType 对应的参数
+    const InstallerInfo* dbInfo = DB_FindByType(match.ks->installerType);
+    if (!dbInfo) {
+        // 数据库无此类型，标记为"已知软件但参数待研究"
+        result.installerType = match.ks->installerType;
+        result.dieDetection = std::string("Known: ") + match.ks->installerType;
+        result.errorMessage = "已知软件，但静默参数待研究 (" + std::string(match.ks->installerType) + ")";
+        result.confidence = 0.4;
+        return result;
+    }
+
+    result.installerType = dbInfo->type;
+    result.installerFullName = dbInfo->fullName;
+    result.confidence = match.confidence;
+
+    // 获取命令模板
+    std::string sc = dbInfo->cmdTemplate;
+
+    // 断代检测：如果该软件有年代相关的参数变体，用PE时间戳选择
+    const SilentParamVariant* era = GetEraTable(match.ks->installerType);
+    if (era) {
+        int year = TimestampToYear(ReadPETimestamp(filePath));
+        const SilentParamVariant* variant = SelectByEra(era, year);
+        if (variant && variant->command) {
+            sc = variant->command;
+        }
+    }
+
+    // 替换 {file}
     std::string fname = GetFileName(filePath);
     size_t pos = sc.find("{file}");
     if (pos != std::string::npos)
         sc.replace(pos, 6, fname);
 
-    // 先查现有数据库（InnoSetup/NSIS等标准类型）
-    const InstallerInfo* dbInfo = DB_FindByType(ks->installerType);
-    if (dbInfo) {
-        result.installerType = dbInfo->type;
-        result.installerFullName = ks->displayName;
-        result.silentCommand = sc;
-        result.confidence = 0.75;
-        for (int i = 0; i < dbInfo->paramCount; i++)
-            result.params.push_back(&dbInfo->params[i]);
-    } else {
-        // 自定义类型，直接使用已知参数
-        result.installerType = ks->installerType;
-        result.installerFullName = ks->displayName;
-        result.silentCommand = sc;
-        result.confidence = 0.65;
-    }
+    result.silentCommand = sc;
+    result.confidence = 0.75;
+    for (int i = 0; i < dbInfo->paramCount; i++)
+        result.params.push_back(&dbInfo->params[i]);
+
     result.success = true;
     return result;
 }
@@ -962,6 +990,14 @@ ScanResult DetectorEngine::Scan(const std::wstring& filePath) {
         if (ksResult.success)
             return ksResult;
 
+        // KnownSoftware found something but no params? show it
+        if (!ksResult.dieDetection.empty()) {
+            dieResult.errorMessage += " (PE扫描也未命中)";
+            dieResult.dieDetection = ksResult.dieDetection;
+            dieResult.installerFullName = ksResult.installerFullName;
+            return dieResult;
+        }
+
         // All failed, return DIE error
         dieResult.errorMessage += " (PE扫描也未命中)";
         return dieResult;
@@ -973,6 +1009,13 @@ ScanResult DetectorEngine::Scan(const std::wstring& filePath) {
 
     ScanResult ksResult = m_known.Scan(filePath);
     if (ksResult.success) return ksResult;
+
+    if (!ksResult.dieDetection.empty()) {
+        peResult.errorMessage += " (PE扫描也未命中)";
+        peResult.dieDetection = ksResult.dieDetection;
+        peResult.installerFullName = ksResult.installerFullName;
+        return peResult;
+    }
 
     return peResult;
 }

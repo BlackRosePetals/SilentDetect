@@ -48,9 +48,11 @@ inline int Utf8ToWide(const char* utf8, wchar_t* wide, int wideLen) {
 
 static const SilentParam pNSIS[] = {
     {"/S",        "静默安装 (必需，大写)", true},
-    {"/D=<path>", "指定安装目录 (必须为最后一个参数)"},
-    {"/NCRC",     "跳过CRC完整性校验"},
-    {"/NOCD",     "禁用当前目录更改"}
+    {"/S /PreventRebootRequired=true",
+                  "winget推荐:静默+禁止重启(需安装器支持)", false},
+    {"/D=<path>", "指定安装目录 (必须为最后一个参数)", false},
+    {"/NCRC",     "跳过CRC完整性校验", false},
+    {"/NOCD",     "禁用当前目录更改", false}
 };
 static const char* sNSIS[] = {"NullsoftInst", "NSIS Error", "!@Install@!UTF-8!", "NSIS_INSTALLDIR"};
 static const BYTE mNSIS_d[] = {0xEF, 0xBE, 0xAD, 0xDE};
@@ -63,9 +65,11 @@ static const char* secNSIS[] = {".ndata", ".nsis"};
 
 static const SilentParam pInno[] = {
     {"/VERYSILENT",          "完全静默 (推荐)", true},
-    {"/SILENT",              "静默模式 (显示进度条)"},
-    {"/SUPPRESSMSGBOXES",    "抑制所有消息框"},
-    {"/SP-",                 "禁用初始安装提示"},
+    {"/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-",
+                             "winget推荐:全面静默+抑制弹窗+禁止重启(推荐)", false},
+    {"/SILENT",              "静默模式 (显示进度条)", false},
+    {"/SUPPRESSMSGBOXES",    "抑制所有消息框", false},
+    {"/SP-",                 "禁用初始安装提示", false},
     {"/NORESTART",           "禁止重启提示"},
     {"/NOCANCEL",            "禁止取消安装"},
     {"/DIR=\"x:\\path\"",    "指定安装目录"},
@@ -509,6 +513,14 @@ static const SilentParam pMSIXB[] = {
 static const char* sMSIXB[] = {"AppxBundleManifest", "MSIXBundle", "msixbundle", "windows.com/appxbundle"};
 static const MagicBytes mMSIXB[] = {{mPK_d, 4}};
 
+// Adobe Setup 多版本参数（由KnownSoftware通过PE版本信息匹配）
+static const SilentParam pAdobe[] = {
+    {"--silent=1",         "最新版/CC Elements(实测可用)",         true},
+    {"--mode=silent",      "CS3-CS6旧版静默安装",                false},
+    {"--silent",           "Creative Cloud企业版(AAMEE)",        false},
+    {"--deploymentFile=<xml>", "指定安装配置文件(配合上述参数)",  false},
+};
+
 // ============================================================
 // Master database
 // ============================================================
@@ -554,6 +566,13 @@ static const InstallerInfo g_database[] = {
     E_SM ("APPX",                "APPX (Windows App Package)",                "powershell Add-AppxPackage -Path '{file}'", pAPPX, sAPPX,  mAPPX),
     E_SM ("MSIX",                "MSIX (Modern Windows App Package)",         "powershell Add-AppxPackage -Path '{file}'", pMSIX, sMSIX,  mMSIX),
     E_SM ("MSIXBundle",          "MSIXBundle (App Bundle Package)",           "powershell Add-AppxPackage -Path '{file}'", pMSIXB,sMSIXB, mMSIXB),
+    // === KnownSoftware 专用类型（无DIE/PE二进制签名，仅通过文件名/PE版本信息匹配） ===
+    {"AdobeSetup", "Adobe Setup(参数因版本而异)", "\"{file}\" --silent=1", pAdobe, sizeof(pAdobe)/sizeof(pAdobe[0]), nullptr, 0, nullptr, 0, nullptr, 0},
+    {"GoogleInstaller", "Google Chrome/Opera Installer", "\"{file}\" /silent /install", pNSIS, sizeof(pNSIS)/sizeof(pNSIS[0]), nullptr, 0, nullptr, 0, nullptr, 0},
+    {"VSBootstrapper", "Visual Studio Bootstrapper", "\"{file}\" --quiet --norestart", pNSIS, sizeof(pNSIS)/sizeof(pNSIS[0]), nullptr, 0, nullptr, 0, nullptr, 0},
+    {"Custom", "Custom Installer", "\"{file}\" /S", pNSIS, sizeof(pNSIS)/sizeof(pNSIS[0]), nullptr, 0, nullptr, 0, nullptr, 0},
+    {"OfficeMsi", "Microsoft Office(需config.xml)", "setup.exe /configure config.xml", pMSI, sizeof(pMSI)/sizeof(pMSI[0]), nullptr, 0, nullptr, 0, nullptr, 0},
+    {"WinRAR", "WinRAR Self-Extracting", "\"{file}\" /s", p7z, sizeof(p7z)/sizeof(p7z[0]), nullptr, 0, nullptr, 0, nullptr, 0},
 };
 
 static const int g_dbCount = sizeof(g_database) / sizeof(g_database[0]);

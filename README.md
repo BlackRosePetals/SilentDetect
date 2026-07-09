@@ -27,15 +27,30 @@
 **1.3.5**
    新增帮助文本分析功能（HelpTextScanner）：当DIE和PE扫描都未命中时，尝试用`/?`、`-?`、`/help`、`--help`等参数运行程序，捕获帮助文本并搜索静默参数关键词（如/SILENT、/QN、/Q:a等）。扫描流程升级为三级回退：DIE → PeScanner → HelpTextScanner。
 
-**1.3.6**
-   安全更新与功能增强：
-   - 移除 HelpTextScanner（存在意外安装风险，部分安装器忽略帮助参数直接启动安装）
-   - 批处理注释根据系统语言环境自动选择中文或英文
-   - 批量运行功能升级：支持勾选/取消勾选文件、鼠标上移/下移调整安装顺序、"生成批处理"按钮仅生成.bat不安装
-   - 修复 Chrome 等安装器扫描时产生 .tmp 临时文件的问题
-
-**1.3.7**
-   新增知名软件静默参数库：
-   - 内置 40+ 常用软件的静默安装参数（浏览器、压缩工具、办公、开发工具、IM通讯等）
-   - 通过文件名关键词匹配，自动识别并推荐静默命令
-   - 扫描管线：DIE → PeScanner → KnownSoftware（三级回退）
+**1.4.0** ⚠ 未经详细测试，欢迎反馈
+   **重大架构升级：Installer Intelligence Engine**
+   - 识别管线重排：DIE → PeScanner → KnownSoftware(数字签名→PE版本→文件名→文件夹)
+   - 新增数字签名识别：读取程序证书公司名，精准鉴定软件来源
+   - 新增PE版本信息识别：通过ProductName/CompanyName匹配软件
+   - 新增PE时间戳断代：自动区分Adobe/Office等软件的年代对应参数
+   - 新增文件夹名辅助识别
+   - DIE MapDieType补全12个缺失映射(CABINET→IExpress等)
+   
+   **交互升级：**
+   - 静默参数列表可点击切换命令(再点删除)，方便测试多种参数
+   - 批量运行支持勾选+排序+生成批处理(不安装)
+   - 批处理注释根据系统语言自动中英文切换
+   
+   **数据增强：**
+   - 40+知名软件硬编码映射(通过文件名/PE/签名等匹配)
+   - winget社区参数补充(InnoSetup添加SUPPRESSMSGBOXES/NORESTART等)
+   - 从winget-pkgs仓库提取15万条YAML生成InstallerType参数映射表
+   - Adobe三代安装器参数自动选择(CS3-CS6/CC早期/CC新版)
+   
+   **安全修复：**
+   - 移除HelpTextScanner(部分安装器忽略帮助参数意外启动安装)
+   - 修复DIE假阳性(找到类型但数据库无参数时不再谎报成功)
+   - 修复Chrome等扫描产生.tmp临时文件
+   
+   **性能：**
+   - Tools解压改用tar.exe(速度提升数倍)

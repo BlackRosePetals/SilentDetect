@@ -8,6 +8,7 @@
 #include <commdlg.h>
 #include <shellapi.h>
 #include <shlobj.h>
+#include <algorithm>
 #include <string>
 #include <vector>
 #include <cstdio>
@@ -850,7 +851,9 @@ static void CreateControls(HWND hWnd) {
     ListView_InsertColumn(g_hLstParams, 1, &col);
 
     // Group 4: Command
-    g_hGrpCmd = CreateWindowExW(0, L"BUTTON", L"\x9759\x9ED8\x5B89\x88C5\x547D\x4EE4", // 静默安装命令
+    g_hGrpCmd = CreateWindowExW(0, L"BUTTON",
+        L"\x9759\x9ED8\x5B89\x88C5\x547D\x4EE4 (\x9F20\x6807\x70B9\x51FB\x4E0A\x65B9\x53C2\x6570\x53EF\x6DFB\x52A0/\x5220\x9664\x53C2\x6570)",
+        // 静默安装命令 (鼠标点击上方参数可添加/删除参数)
         WS_CHILD | WS_VISIBLE | BS_GROUPBOX, 0,0,0,0, hWnd, (HMENU)IDC_GRP_CMD, g_hInst, nullptr);
     g_hTxtCmd = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
         WS_CHILD | WS_VISIBLE | ES_READONLY | ES_AUTOHSCROLL,
@@ -1119,6 +1122,78 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         } // end switch LOWORD(wParam)
         break;
 
+    case WM_NOTIFY: {
+        NMHDR* pnm = (NMHDR*)lParam;
+        // 静默参数列表点击 → toggle 添加/删除参数
+        if (pnm->idFrom == IDC_LST_PARAMS && pnm->code == NM_CLICK) {
+            int idx = (int)SendMessage(g_hLstParams, LVM_GETNEXTITEM, -1, LVNI_SELECTED);
+            if (idx >= 0 && idx < (int)g_currentResult.params.size() && g_hasResult) {
+                const SilentParam* sp = g_currentResult.params[idx];
+                if (sp) {
+                    std::string sw(sp->sw);
+                    // 读取当前命令
+                    std::wstring curCmdW(512, L'\0');
+                    GetWindowTextW(g_hTxtCmd, &curCmdW[0], 511);
+                    curCmdW.resize(wcslen(curCmdW.c_str()));
+                    std::string curCmd = WToA(curCmdW);
+
+                    // 找到命令中开关参数起始位置（文件名后面的第一个 / 或 -）
+                    // 格式: "file.exe" /S  或  msiexec /i "file.msi" /qn
+                    size_t switchStart = std::string::npos;
+                    for (size_t i = 0; i < curCmd.size(); i++) {
+                        if (curCmd[i] == '/' || curCmd[i] == '-') {
+                            // 确保不是路径中的 / (路径通常以盘符或引号包裹)
+                            if (i > 0 && curCmd[i-1] == ' ') { switchStart = i; break; }
+                        }
+                    }
+
+                    std::string baseCmd, switchesPart;
+                    if (switchStart != std::string::npos) {
+                        baseCmd = curCmd.substr(0, switchStart);
+                        // 去掉 base 末尾多余空格
+                        while (!baseCmd.empty() && baseCmd.back() == ' ') baseCmd.pop_back();
+                        switchesPart = curCmd.substr(switchStart);
+                    } else {
+                        baseCmd = curCmd;
+                        switchesPart = "";
+                    }
+
+                    // 将 switches 拆分为独立参数（按空格分割，但保留引号内的内容）
+                    std::vector<std::string> activeSwitches;
+                    std::string current;
+                    bool inQuote = false;
+                    for (size_t i = 0; i < switchesPart.size(); i++) {
+                        char c = switchesPart[i];
+                        if (c == '"') { inQuote = !inQuote; current += c; }
+                        else if (c == ' ' && !inQuote) {
+                            if (!current.empty()) { activeSwitches.push_back(current); current.clear(); }
+                        } else {
+                            current += c;
+                        }
+                    }
+                    if (!current.empty()) activeSwitches.push_back(current);
+
+                    // Toggle: 如果 sw 已在列表中则移除，否则添加
+                    auto it = std::find(activeSwitches.begin(), activeSwitches.end(), sw);
+                    if (it != activeSwitches.end()) {
+                        activeSwitches.erase(it);  // 移除
+                    } else {
+                        activeSwitches.push_back(sw);  // 添加
+                    }
+
+                    // 重建命令
+                    std::string newCmd = baseCmd;
+                    for (const auto& s : activeSwitches) {
+                        newCmd += " " + s;
+                    }
+                    SetWindowTextW(g_hTxtCmd, AToW(newCmd).c_str());
+                    InvalidateRect(g_hTxtCmd, NULL, TRUE);
+                }
+            }
+        }
+        break;
+    }
+
     case WM_USER + 1: {
         // Tools extraction complete, update DIE status
         DieScanner die;
@@ -1237,7 +1312,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR lpCmdLine, int nCmdSh
     wcDlg.lpszClassName = L"BatchOrderDlg";
     RegisterClassExW(&wcDlg);
 
-    std::wstring title = L"\x5927\x5185\x9759\x63A2 v1.3.7";
+    std::wstring title = L"\x5927\x5185\x9759\x63A2 v1.4.0";
 
     g_hWnd = CreateWindowExW(
         WS_EX_ACCEPTFILES,
