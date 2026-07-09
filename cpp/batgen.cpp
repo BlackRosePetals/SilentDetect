@@ -86,17 +86,17 @@ std::string GenerateBatch(const ScanResult& result, const BatchOptions& options)
             installCmd.replace(pos, 6, "%INSTALLER%");
     }
 
-    // Log mode override
+    // 修复：日志模式在原命令基础上追加日志参数，不替换原命令
     if (options.includeLog) {
         std::string logPath = "%~dp0install_log.txt";
         if (result.installerType == "MSI" || result.installerType == "WiXMSI") {
-            installCmd = "msiexec /i \"%INSTALLER%\" /qn /norestart /l*v \"" + logPath + "\"";
+            installCmd += " /l*v \"" + logPath + "\"";
         } else if (result.installerType == "InnoSetup") {
-            installCmd = "\"%INSTALLER%\" /VERYSILENT /SP- /LOG=\"" + logPath + "\"";
+            installCmd += " /LOG=\"" + logPath + "\"";
         } else if (result.installerType == "InstallShield" || result.installerType == "InstallScript") {
-            installCmd = "\"%INSTALLER%\" /s /v\"/qn /l*v " + logPath + "\"";
+            installCmd += " /f2\"" + logPath + "\"";
         } else if (result.installerType == "BitRockInstallBuilder") {
-            installCmd = "\"%INSTALLER%\" --mode unattended --debuglevel 4";
+            installCmd += " --debuglevel 4";
         }
     }
 

@@ -9,6 +9,7 @@
 #include <shellapi.h>
 #include <shlobj.h>
 #include <algorithm>
+#include <atomic>
 #include <string>
 #include <vector>
 #include <cstdio>
@@ -35,7 +36,7 @@
 
 static HINSTANCE g_hInst;
 static HWND g_hWnd;
-static bool g_toolsExtractedToTemp = false; // 修复：替代main.cpp中重复的g_toolsPath，标记是否解压到临时目录
+static std::atomic<bool> g_toolsExtractedToTemp{false}; // 修复：跨线程数据竞争 // 修复：替代main.cpp中重复的g_toolsPath，标记是否解压到临时目录
 static std::future<void> g_extractFuture; // 修复：后台解压线程future，用于安全等待
 
 // ============================================================
@@ -350,6 +351,28 @@ static std::wstring AToW(const std::string& s) {
     return AToW(s.c_str());
 }
 
+static std::wstring GetExeDirectory() {
+    wchar_t buf[MAX_PATH] = {};
+    GetModuleFileNameW(NULL, buf, MAX_PATH);
+    std::wstring path(buf);
+    size_t slash = path.find_last_of(L"\\/");
+    return (slash != std::wstring::npos) ? path.substr(0, slash) : path;
+}
+
+static void CopyToClipboard(HWND hWnd, const std::wstring& text) {
+    if (OpenClipboard(hWnd)) {
+        EmptyClipboard();
+        size_t size = (text.size() + 1) * sizeof(wchar_t);
+        HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, size);
+        if (hMem) {
+            wchar_t* p = (wchar_t*)GlobalLock(hMem);
+            if (p) { memcpy(p, text.c_str(), size); GlobalUnlock(hMem); }
+            SetClipboardData(CF_UNICODETEXT, hMem);
+        }
+        CloseClipboard();
+    }
+}
+
 static std::string WToA(const std::wstring& ws) {
     if (ws.empty()) return "";
     int len = WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), -1, nullptr, 0, nullptr, nullptr);
@@ -383,23 +406,14 @@ static int HeadlessScan(const std::wstring& inputFile, const std::wstring& outFi
     std::string out;
     out.reserve(4096);
 
-    auto WToU8 = [](const std::wstring& ws) -> std::string {
-        if (ws.empty()) return "";
-        int len = WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), -1, nullptr, 0, nullptr, nullptr);
-        if (len <= 0) return "";
-        std::string s(len - 1, '\0');
-        WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), -1, &s[0], len, nullptr, nullptr);
-        return s;
-    };
-
     out += "=== \xE5\xA4\xA7\xE5\x86\x85\xE9\x9D\x99\xE6\x8E\xA2 \xE6\x89\xAB\xE6\x8F\x8F\xE7\xBB\x93\xE6\x9E\x9C ===\r\n\r\n";
-    out += "\xE6\x96\x87\xE4\xBB\xB6: " + WToU8(inputFile) + "\r\n";
+    out += "\xE6\x96\x87\xE4\xBB\xB6: " + WToA(inputFile) + "\r\n"; // 修复：复用WToA
 
     if (result.success) {
         out += "\xE5\xAE\x89\xE8\xA3\x85\xE5\x99\xA8\xE7\xB1\xBB\xE5\x9E\x8B: " + result.installerFullName + " (" + result.installerType + ")\r\n";
         out += "\xE7\x89\x88\xE6\x9C\xAC: --\r\n";
         out += "\xE6\xA3\x80\xE6\xB5\x8B\xE6\x96\xB9\xE5\xBC\x8F: " + result.detectedBy + "\r\n";
-        out += "\xE7\xBD\xAE\xE4\xBF\xA1\xE5\xBA\xA6: " + WToU8(result.GetConfidenceStars()) + "\r\n";
+        out += "\xE7\xBD\xAE\xE4\xBF\xA1\xE5\xBA\xA6: " + WToA(result.GetConfidenceStars()) + "\r\n"; // 修复：复用WToA
         out += "\xE9\x9D\x99\xE9\xBB\x98\xE5\x91\xBD\xE4\xBB\xA4: " + result.silentCommand + "\r\n\r\n";
         out += "\xE9\x9D\x99\xE9\xBB\x98\xE5\xAE\x89\xE8\xA3\x85\xE5\x8F\x82\xE6\x95\xB0:\r\n";
         for (const auto* p : result.params) {
@@ -980,9 +994,12 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
             return 0;
         }
 
-        case IDC_BTN_COPY: {
+        case IDC_BTN_COPY:
             if (g_hasResult) {
-                std::wstring cmd = AToW(g_currentResult.silentCommand);
+                // 修复：复制文本框当前内容，而非原始默认命令
+                std::wstring cmd; cmd.resize(512);
+                GetWindowTextW(g_hTxtCmd, &cmd[0], 511);
+                cmd.resize(wcslen(cmd.c_str()));
                 if (OpenClipboard(hWnd)) {
                     EmptyClipboard();
                     size_t size = (cmd.size() + 1) * sizeof(wchar_t);
@@ -994,11 +1011,11 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                         SetClipboardData(CF_UNICODETEXT, hMem);
                     }
                     CloseClipboard();
-                    SetStatus(L"\x547D\x4EE4\x5DF2\x590D\x5236\x5230\x526A\x8D34\x677F"); // 命令已复制到剪贴板
                 }
+                SetStatus(L"T7DNE4]F2Y0DR36R30R6A34g7F");
             }
             return 0;
-        }
+        
 
         case IDC_BTN_GENBAT: {
             if (!g_hasResult) return 0;
@@ -1092,8 +1109,15 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
             // 模态消息循环
             EnableWindow(hWnd, FALSE);
             MSG dlgMsg;
-            while (GetMessageW(&dlgMsg, NULL, 0, 0)) {
+            BOOL bDlgRet;
+            while ((bDlgRet = GetMessageW(&dlgMsg, NULL, 0, 0)) != 0) {
+                if (bDlgRet == -1) break; // 修复：GetMessageW 异常
                 if (!IsWindow(g_hBatchDlg)) break;
+                if (dlgMsg.message == WM_QUIT) {
+                    // 修复：内层循环收到WM_QUIT时重新投递到外层
+                    PostQuitMessage((int)dlgMsg.wParam);
+                    break;
+                }
                 TranslateMessage(&dlgMsg);
                 DispatchMessageW(&dlgMsg);
             }
@@ -1124,8 +1148,15 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 
     case WM_NOTIFY: {
         NMHDR* pnm = (NMHDR*)lParam;
-        // 静默参数列表点击 → toggle 添加/删除参数
+        // 静默参数列表点击 → toggle 添加/删除参数（防抖：忽略500ms内的重复点击）
+        static int g_lastParamIdx = -1;
+        static DWORD g_lastClick = 0;
         if (pnm->idFrom == IDC_LST_PARAMS && pnm->code == NM_CLICK) {
+            DWORD now = GetTickCount();
+            int curIdx = (int)SendMessage(g_hLstParams, LVM_GETNEXTITEM, -1, LVNI_SELECTED);
+            if (curIdx == g_lastParamIdx && (now - g_lastClick) < 500) break;
+            g_lastClick = now;
+            g_lastParamIdx = curIdx;
             int idx = (int)SendMessage(g_hLstParams, LVM_GETNEXTITEM, -1, LVNI_SELECTED);
             if (idx >= 0 && idx < (int)g_currentResult.params.size() && g_hasResult) {
                 const SilentParam* sp = g_currentResult.params[idx];
@@ -1150,42 +1181,37 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                     std::string baseCmd, switchesPart;
                     if (switchStart != std::string::npos) {
                         baseCmd = curCmd.substr(0, switchStart);
-                        // 去掉 base 末尾多余空格
                         while (!baseCmd.empty() && baseCmd.back() == ' ') baseCmd.pop_back();
                         switchesPart = curCmd.substr(switchStart);
                     } else {
                         baseCmd = curCmd;
                         switchesPart = "";
                     }
+                    while (!switchesPart.empty() && switchesPart.front() == ' ') switchesPart.erase(0, 1);
+                    while (!switchesPart.empty() && switchesPart.back() == ' ') switchesPart.pop_back();
 
-                    // 将 switches 拆分为独立参数（按空格分割，但保留引号内的内容）
-                    std::vector<std::string> activeSwitches;
-                    std::string current;
-                    bool inQuote = false;
-                    for (size_t i = 0; i < switchesPart.size(); i++) {
-                        char c = switchesPart[i];
-                        if (c == '"') { inQuote = !inQuote; current += c; }
-                        else if (c == ' ' && !inQuote) {
-                            if (!current.empty()) { activeSwitches.push_back(current); current.clear(); }
-                        } else {
-                            current += c;
-                        }
-                    }
-                    if (!current.empty()) activeSwitches.push_back(current);
+                    // 1. tokenize—active集合（去重保序）
+                    std::vector<std::string> active;
+                    { std::string c; for (char x : switchesPart) { if (x == ' ') { if (!c.empty() && std::find(active.begin(),active.end(),c)==active.end()) active.push_back(c); c.clear(); } else c += x; } if (!c.empty() && std::find(active.begin(),active.end(),c)==active.end()) active.push_back(c); }
 
-                    // Toggle: 如果 sw 已在列表中则移除，否则添加
-                    auto it = std::find(activeSwitches.begin(), activeSwitches.end(), sw);
-                    if (it != activeSwitches.end()) {
-                        activeSwitches.erase(it);  // 移除
-                    } else {
-                        activeSwitches.push_back(sw);  // 添加
-                    }
+                    // 2. tokenize—点击参数
+                    std::vector<std::string> swToks;
+                    { std::string c; for (char x : sw) { if (x == ' ') { if (!c.empty()) swToks.push_back(c); c.clear(); } else c += x; } if (!c.empty()) swToks.push_back(c); }
 
-                    // 重建命令
-                    std::string newCmd = baseCmd;
-                    for (const auto& s : activeSwitches) {
-                        newCmd += " " + s;
-                    }
+                    // 3. 全部在集合中？
+                    bool allIn = true;
+                    for (auto& t : swToks) { if (std::find(active.begin(),active.end(),t)==active.end()) { allIn=false; break; } }
+
+                    // 4. toggle
+                    if (allIn) { for (auto& t : swToks) active.erase(std::remove(active.begin(),active.end(),t),active.end()); }
+                    else { for (auto& t : swToks) { if (std::find(active.begin(),active.end(),t)==active.end()) active.push_back(t); } }
+
+                    // 5. 重建
+                    std::string newSwitches;
+                    for (size_t i=0; i<active.size(); i++) { if (i>0) newSwitches += " "; newSwitches += active[i]; }
+
+                std::string newCmd = baseCmd;
+                    if (!newSwitches.empty()) newCmd += " " + newSwitches;
                     SetWindowTextW(g_hTxtCmd, AToW(newCmd).c_str());
                     InvalidateRect(g_hTxtCmd, NULL, TRUE);
                 }
@@ -1312,7 +1338,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR lpCmdLine, int nCmdSh
     wcDlg.lpszClassName = L"BatchOrderDlg";
     RegisterClassExW(&wcDlg);
 
-    std::wstring title = L"\x5927\x5185\x9759\x63A2 v1.4.0";
+    std::wstring title = L"\x5927\x5185\x9759\x63A2 v1.4.1";
 
     g_hWnd = CreateWindowExW(
         WS_EX_ACCEPTFILES,
@@ -1390,7 +1416,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR lpCmdLine, int nCmdSh
     }
 
     MSG msg;
-    while (GetMessageW(&msg, nullptr, 0, 0)) {
+    BOOL bRet;
+    while ((bRet = GetMessageW(&msg, nullptr, 0, 0)) != 0) {
+        if (bRet == -1) break; // 修复：GetMessageW 返回-1 时 msg 未初始化
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }

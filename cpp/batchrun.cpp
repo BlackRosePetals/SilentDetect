@@ -6,6 +6,7 @@
 #include <sstream>
 #include <functional>
 #include <cstdarg>
+#include <cwchar>  // 修复：显式声明wcschr
 #include <cstdio>
 #include <shlwapi.h>
 #include <shellapi.h>
@@ -421,7 +422,8 @@ static int GetExeArchitecture(const std::wstring& exePath) {
     if (dosHeader[0] != 'M' || dosHeader[1] != 'Z') { fclose(f); return -1; }
 
     // 获取PE头偏移
-    DWORD peOffset = *(DWORD*)(dosHeader + 60);
+    DWORD peOffset;
+    memcpy(&peOffset, dosHeader + 60, sizeof(peOffset)); // 修复：避免非对齐访问
     fseek(f, peOffset, SEEK_SET);
 
     // 读取PE签名和Machine字段
@@ -435,7 +437,8 @@ static int GetExeArchitecture(const std::wstring& exePath) {
     }
 
     // Machine字段
-    WORD machine = *(WORD*)(peHeader + 4);
+    WORD machine;
+    memcpy(&machine, peHeader + 4, sizeof(machine)); // 修复：避免非对齐访问
     fclose(f);
 
     if (machine == 0x8664) return 64;  // AMD64
@@ -718,14 +721,18 @@ bool BR_Process7zFile(HWND hWnd, const std::wstring& zipPath, const std::wstring
     std::wstring extractArgs = L"x -y -o\"" + extractDir + L"\" \"" + zipPath + L"\"";
     std::wstring extractOutput = Run7zCommand(sevenZPath, extractArgs);
 
-    // 检查解压是否成功
-    bool extractOk = (extractOutput.find(L"Everything is Ok") != std::wstring::npos ||
-                      extractOutput.find(L"Ok") != std::wstring::npos);
+    // 检查解压是否成功（修复：只用7z的精确成功标志）
+    bool extractOk = (extractOutput.find(L"Everything is Ok") != std::wstring::npos);
     Log("Extract result: %s", extractOk ? "OK" : "FAILED");
 
     if (!extractOk) {
-        // 解压失败，清理目录
-        RemoveDirectoryW(extractDir.c_str());
+        // 修复：使用SHFileOperationW递归删除非空目录
+        std::wstring delPath = extractDir + L'\0';
+        SHFILEOPSTRUCTW fop = {};
+        fop.wFunc = FO_DELETE;
+        fop.pFrom = delPath.c_str();
+        fop.fFlags = FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_SILENT;
+        SHFileOperationW(&fop);
         return false;
     }
 
@@ -874,13 +881,19 @@ static HANDLE LaunchItem(const RunItem& item, const std::wstring& dir) {
     std::wstring cmdLine;
     std::wstring workDir = dir;
 
-    // bat/cmd：用 cmd /c 调用
+    // bat/cmd：用 cmd /c 调用（修复：防止文件名中的特殊字符导致命令注入）
     if (item.ext == L".bat" || item.ext == L".cmd") {
         std::wstring runPath = item.filePath;
         std::wstring silentPath = BR_PrepareBatCmd(item.filePath);
         if (!silentPath.empty())
             runPath = silentPath;
-        cmdLine = L"cmd /c \"" + runPath + L"\"";
+        // 转义路径中的 & | < > ^ 等特殊字符
+        std::wstring escapedPath;
+        for (wchar_t c : runPath) {
+            if (wcschr(L"&|<>^%!()", c)) escapedPath += L'^';
+            escapedPath += c;
+        }
+        cmdLine = L"cmd /c \"" + escapedPath + L"\"";
     }
     // reg：用 regedit /s
     else if (item.ext == L".reg") {

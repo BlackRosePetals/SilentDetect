@@ -332,7 +332,9 @@ inline KSMatch KS_FindByPattern(const std::wstring& filePath) {
 
     // 四、文件夹名匹配（0.55）
     if (!lowerPath.empty()) {
-        for (const KnownSoft* ks = g_knownSoftware; ks->pattern; ks++) {
+        for (const KnownSoft* ks = g_knownSoftware;
+             !(ks->pattern == NULL && ks->productName == NULL && ks->companyName == NULL && ks->installerType == NULL); ks++) {
+            if (!ks->pattern) continue; // 修复：跳过无pattern的条目，但不停止循环
             std::string pat(ks->pattern);
             for (auto& c : pat) c = (char)tolower((unsigned char)c);
             if (lowerPath.find(pat) != std::string::npos)
