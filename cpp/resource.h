@@ -46,6 +46,7 @@
 #define IDC_BTN_SELNONE     1074
 #define IDC_BTN_START       1075
 #define IDC_BTN_GENBAT2     1076
+#define IDC_BTN_CHECK_UPDATE 1077
 
 #define IDC_STATUSBAR       1050
 

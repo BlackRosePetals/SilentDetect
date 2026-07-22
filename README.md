@@ -27,6 +27,13 @@
 **1.3.5**
    新增帮助文本分析功能（HelpTextScanner）：当DIE和PE扫描都未命中时，尝试用`/?`、`-?`、`/help`、`--help`等参数运行程序，捕获帮助文本并搜索静默参数关键词（如/SILENT、/QN、/Q:a等）。扫描流程升级为三级回退：DIE → PeScanner → HelpTextScanner。
 
+**1.4.2** ⚠ 测试版
+   **自动更新功能**：
+   - 启动时自动检查 GitHub 新版本
+   - 检测到更新自动下载，下次启动生效
+   - 右下角"检查更新"按钮可手动触发
+   - 版本比较：如 v1.4.1 < v1.4.2 即触发更新
+
 **1.4.0** ⚠ 未经详细测试，欢迎反馈
    **重大架构升级：Installer Intelligence Engine**
    - 识别管线重排：DIE → PeScanner → KnownSoftware(数字签名→PE版本→文件名→文件夹)

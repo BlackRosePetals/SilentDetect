@@ -15,6 +15,7 @@
 #include <cstdio>
 #include <thread>
 #include <future>  // 修复：用于后台线程安全等待
+#include <urlmon.h>  // URLDownloadToFile
 #include "resource.h"
 #include "database.h"
 #include "scanner.h"
@@ -29,6 +30,7 @@
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "gdi32.lib")
 #pragma comment(lib, "user32.lib")
+#pragma comment(lib, "urlmon.lib")
 
 // ============================================================
 // Globals
@@ -260,7 +262,7 @@ static HWND g_hLblDetCap, g_hLblDet, g_hLblConfCap, g_hLblConf;
 static HWND g_hGrpParams, g_hLstParams;
 static HWND g_hGrpCmd, g_hTxtCmd, g_hBtnCopy;
 static HWND g_hGrpBatch, g_hChkLog, g_hChkErr, g_hChkUac, g_hChkComment, g_hBtnGenBat;
-static HWND g_hGrpRun, g_hBtnRunExes, g_hBtnRunAll;
+static HWND g_hGrpRun, g_hBtnRunExes, g_hBtnRunAll, g_hBtnCheckUpdate;
 static HWND g_hProgress;
 static HWND g_hStatusBar;
 
@@ -528,7 +530,8 @@ static void LayoutControls(HWND hWnd) {
     MoveWindow(g_hGrpRun, pad, y, grpW, 50, TRUE);
     int btnW = (grpW - 2*innerPad - 10) / 2;
     MoveWindow(g_hBtnRunExes, pad + innerPad, y + 20, btnW, 25, TRUE);
-    MoveWindow(g_hBtnRunAll, pad + innerPad + btnW + 10, y + 20, btnW, 25, TRUE);
+    MoveWindow(g_hBtnRunAll, pad + innerPad + btnW + 10, y + 20, btnW - 50, 25, TRUE);
+    MoveWindow(g_hBtnCheckUpdate, pad + grpW - innerPad - 40, y + 20, 40, 25, TRUE);
 
     // Status bar and progress bar at bottom
     SendMessage(g_hStatusBar, WM_SIZE, 0, 0);
@@ -889,6 +892,7 @@ static void CreateControls(HWND hWnd) {
         WS_CHILD | WS_VISIBLE | BS_GROUPBOX, 0,0,0,0, hWnd, (HMENU)1070, g_hInst, nullptr);
     g_hBtnRunExes = CreateBtn(hWnd, L"\x8FD0\x884C\x5168\x90E8\x6267\x884C\x7A0B\x5E8F", IDC_BTN_RUN_EXES, 0,0,0,0); // 运行全部执行程序
     g_hBtnRunAll = CreateBtn(hWnd, L"\x8FD0\x884C\x5168\x90E8\x7A0B\x5E8F\x548C\x811A\x672C", IDC_BTN_RUN_ALL, 0,0,0,0); // 运行全部程序和脚本
+    g_hBtnCheckUpdate = CreateBtn(hWnd, L"\x68C0\x67E5\x66F4\x65B0", IDC_BTN_CHECK_UPDATE, 0,0,0,0); // 检查更新
 
     // Progress bar (initially hidden)
     g_hProgress = CreateWindowExW(0, PROGRESS_CLASSW, nullptr,
@@ -911,7 +915,7 @@ static void CreateControls(HWND hWnd) {
         g_hLblDrop, g_hBtnBrowse, g_hLblFilePath,
         g_hLblTypeCap, g_hLblType, g_hLblVerCap, g_hLblVer,
         g_hLblDetCap, g_hLblDet, g_hLblConfCap, g_hLblConf,
-        g_hBtnCopy, g_hBtnGenBat, g_hBtnRunExes, g_hBtnRunAll,
+        g_hBtnCopy, g_hBtnGenBat, g_hBtnRunExes, g_hBtnRunAll, g_hBtnCheckUpdate,
         g_hChkLog, g_hChkErr, g_hChkUac, g_hChkComment};
     for (HWND h : allLabels) SendMessage(h, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
     SendMessage(g_hTxtCmd, WM_SETFONT, (WPARAM)g_hFontMono, TRUE);
@@ -921,6 +925,8 @@ static void CreateControls(HWND hWnd) {
 }
 
 // ============================================================
+static void CheckForUpdate();
+
 // WndProc
 // ============================================================
 
@@ -1143,6 +1149,12 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
             }
             return 0;
         }
+
+        case IDC_BTN_CHECK_UPDATE: {
+            CheckForUpdate();
+            SetStatus(L"\x6B63\x5728\x68C0\x67E5\x66F4\x65B0...");
+            return 0;
+        }
         } // end switch LOWORD(wParam)
         break;
 
@@ -1233,6 +1245,13 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         return 0;
     }
 
+    case WM_USER + 100: {
+        // Auto-update download completed
+        SendMessage(g_hStatusBar, SB_SETTEXT, 0,
+            (LPARAM)L"\x66F4\x65B0\x5DF2\x4E0B\x8F7D\xFF0C\x4E0B\x6B21\x542F\x52A8\x751F\x6548");
+        return 0;
+    }
+
     case WM_DESTROY:
         DeleteObject(g_hFontNormal);
         DeleteObject(g_hFontBold);
@@ -1266,6 +1285,103 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 }
 
 // ============================================================
+// ============================================================
+// Auto-update
+// ============================================================
+
+#define CURRENT_VERSION "1.4.2"
+
+// 启动时检查是否有已下载的新版本，有则替换当前exe
+static void ApplyPendingUpdate() {
+    wchar_t exePath[MAX_PATH] = {};
+    GetModuleFileNameW(NULL, exePath, MAX_PATH);
+    std::wstring curPath(exePath);
+    size_t dot = curPath.rfind(L'.');
+    if (dot == std::wstring::npos) return;
+    std::wstring newPath = curPath.substr(0, dot) + L"_new.exe";
+    std::wstring oldPath = curPath.substr(0, dot) + L".old";
+
+    // 清理残留的 .old
+    DeleteFileW(oldPath.c_str());
+
+    // 如果有 _new.exe
+    if (GetFileAttributesW(newPath.c_str()) == INVALID_FILE_ATTRIBUTES)
+        return;
+
+    // 重命名当前 → .old，_new → 当前名
+    if (MoveFileExW(curPath.c_str(), oldPath.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+        if (MoveFileExW(newPath.c_str(), curPath.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+            DeleteFileW(oldPath.c_str());  // 删除备份
+        } else {
+            // 恢复
+            MoveFileExW(oldPath.c_str(), curPath.c_str(), MOVEFILE_REPLACE_EXISTING);
+        }
+    }
+}
+
+// 后台线程：检查 GitHub Release 版本号
+static void CheckUpdateThread() {
+    // 获取当前版本号数字部分
+    std::string curVer = CURRENT_VERSION;
+
+    // 获取最新 Release tag
+    std::wstring url = L"https://api.github.com/repos/WooMonlee/SilentDetect/releases/latest";
+    IStream* pStream = NULL;
+    std::string json;
+    if (URLOpenBlockingStreamW(NULL, url.c_str(), &pStream, 0, NULL) == S_OK && pStream) {
+        char buf[4096];
+        ULONG read;
+        while (pStream->Read(buf, sizeof(buf), &read) == S_OK && read > 0)
+            json.append(buf, read);
+        pStream->Release();
+    }
+    if (json.empty()) return;
+
+    // 解析 "tag_name":"vX.X.X"
+    std::string needle = "\"tag_name\"";
+    size_t tagPos = json.find(needle);
+    if (tagPos == std::string::npos) return;
+    tagPos += needle.size();
+    // 跳过 :"
+    tagPos = json.find('"', tagPos);
+    if (tagPos == std::string::npos) return;
+    tagPos++;
+    size_t endTag = json.find('"', tagPos);
+    if (endTag == std::string::npos) return;
+    std::string tag = json.substr(tagPos, endTag - tagPos);
+
+    // 去掉 v 前缀
+    if (!tag.empty() && tag[0] == 'v') tag = tag.substr(1);
+    if (tag.empty()) return;
+
+    // 版本比较：只比较主版本，不比较 v1.4.2 vs v1.4.2-post 之类
+    if (tag <= curVer) return;  // 没有新版本
+
+    // 有新版本：下载到 _new.exe
+    wchar_t exePath[MAX_PATH] = {};
+    GetModuleFileNameW(NULL, exePath, MAX_PATH);
+    std::wstring curPath(exePath);
+    size_t dot = curPath.rfind(L'.');
+    if (dot == std::wstring::npos) return;
+    std::wstring newPath = curPath.substr(0, dot) + L"_new.exe";
+
+    // 下载地址：https://github.com/WooMonlee/SilentDetect/releases/download/vX.X.X/SilentParamQuery.exe
+    std::wstring dlUrl = L"https://github.com/WooMonlee/SilentDetect/releases/download/v"
+        + std::wstring(tag.begin(), tag.end()) + L"/SilentParamQuery.exe";
+
+    HRESULT hr = URLDownloadToFileW(NULL, dlUrl.c_str(), newPath.c_str(), 0, NULL);
+    if (SUCCEEDED(hr) && GetFileAttributesW(newPath.c_str()) != INVALID_FILE_ATTRIBUTES) {
+        // 通知 UI 线程
+        if (g_hWnd)
+            PostMessageW(g_hWnd, WM_USER + 100, 0, 0);
+    }
+}
+
+// 手动触发更新检查
+static void CheckForUpdate() {
+    std::thread(CheckUpdateThread).detach();
+}
+
 // WinMain
 // ============================================================
 
@@ -1284,6 +1400,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR lpCmdLine, int nCmdSh
     // Initialize debug log
     InitLog();
     Log("=== Program START ===");
+
+    // 自动更新：检查是否有已下载的新版本，替换当前 exe
+    ApplyPendingUpdate();
 
     // Load icon
     wchar_t exePath[MAX_PATH];
@@ -1338,7 +1457,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR lpCmdLine, int nCmdSh
     wcDlg.lpszClassName = L"BatchOrderDlg";
     RegisterClassExW(&wcDlg);
 
-    std::wstring title = L"\x5927\x5185\x9759\x63A2 v1.4.1";
+    std::wstring title = L"\x5927\x5185\x9759\x63A2 v1.4.2";
 
     g_hWnd = CreateWindowExW(
         WS_EX_ACCEPTFILES,
@@ -1384,6 +1503,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR lpCmdLine, int nCmdSh
         SendMessage(g_hWnd, WM_SETICON, ICON_BIG, (LPARAM)g_hIcon);
         SendMessage(g_hWnd, WM_SETICON, ICON_SMALL, (LPARAM)g_hIcon);
     }
+
+    // 自动更新：后台检查 GitHub 新版本
+    CheckForUpdate();
 
     // GUI mode CLI actions: file scan + /copy
     if (!cli.inputFile.empty() && GetFileAttributesW(cli.inputFile.c_str()) != INVALID_FILE_ATTRIBUTES) {
